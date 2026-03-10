@@ -1,0 +1,147 @@
+name: Deploy Go Microservices to GCP VM
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      PROJECT_ID: booktopia-project
+      REGION: asia-southeast2
+      REPOSITORY: docker-asia-v2
+      VM_HOST: ${{ secrets.VM_HOST }}
+      VM_USER: ${{ secrets.VM_USER }}
+      VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Go environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Generate go.work.sum
+        run: go work sync
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker to use gcloud as a credential helper
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & Push Services
+        run: |
+          REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}"
+          services=("auth-service" "gateway-service" "book-service" "gifting-service" "transaction-service" "wallet-service")
+
+          for svc in "${services[@]}"; do
+            echo "Building and pushing $svc..."
+            docker buildx build --platform linux/amd64 \
+              --provenance=false \
+              -t "$REGISTRY/$svc:latest" \
+              -f "./$svc/Dockerfile" \
+              . --push
+          done
+
+      - name: Ensure service folders exist on VM
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ env.VM_SSH_KEY }}
+          script: |
+            mkdir -p auth-service book-service gifting-service transaction-service wallet-service gateway-service
+
+      - name: Copy docker-compose.yml and .env files to VM
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ env.VM_SSH_KEY }}
+          source: |
+            docker-compose.yml,
+            auth-service/.env,
+            book-service/.env,
+            gifting-service/.env,
+            transaction-service/.env,
+            wallet-service/.env,
+            gateway-service/.env
+          target: /home/${{ env.VM_USER }}
+
+      - name: Deploy to GCP VM via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ env.VM_SSH_KEY }}
+          script: |
+            cd /home/${{ env.VM_USER }}
+            gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+            REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}"
+            services=("auth-service" "gateway-service" "book-service" "gifting-service" "transaction-service" "wallet-service")
+
+            for svc in "${services[@]}"; do
+              echo "Pulling $svc..."
+              docker pull "$REGISTRY/$svc:latest"
+              docker rm -f $svc || true
+            done
+
+            echo "Shutdown & Clean Up Existing Containers/Network"
+            docker-compose down || true
+            docker network prune -f
+
+            echo "Starting Zookeeper..."
+            docker-compose up -d zookeeper
+
+            # Wait Zookeeper healthy (max 60 detik)
+            echo "Waiting for Zookeeper to be healthy..."
+            for i in {1..12}; do
+              status=$(docker inspect --format='{{.State.Health.Status}}' zookeeper 2>/dev/null || echo "nohealth")
+              echo "Zookeeper health: $status"
+              [ "$status" = "healthy" ] && break
+              sleep 5
+            done
+
+            echo "Starting Kafka..."
+            docker-compose up -d kafka
+
+            # Wait Kafka healthy (max 60 detik)
+            echo "Waiting for Kafka to be healthy..."
+            for i in {1..12}; do
+              status=$(docker inspect --format='{{.State.Health.Status}}' kafka 2>/dev/null || echo "nohealth")
+              echo "Kafka health: $status"
+              [ "$status" = "healthy" ] && break
+              sleep 5
+            done
+
+            echo "Starting all remaining services..."
+            docker-compose up -d auth-service book-service gifting-service transaction-service wallet-service gateway-service
+
+            # (Optional) Auto-create Kafka topic for transaction-events
+            echo "Auto-create Kafka topic if needed..."
+            docker exec kafka kafka-topics.sh --create \
+              --topic transaction-events \
+              --partitions 1 \
+              --replication-factor 1 \
+              --bootstrap-server kafka:29092 || true
+
+            echo "Clean up dangling images"
+            docker image prune -af || true
