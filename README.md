@@ -1,5 +1,5 @@
 # 📚 Booktopia: Enterprise-Grade Microservices E-commerce Platform
-
+# It is a collaboration project to complete 4 months online Backend Golang Bootcamp at Hactiv8
 <p align="center">
   <strong>A high-performance distributive system built for modern book commerce</strong><br>
   Engineered with Go, gRPC, Apache Kafka, and Polyglot Persistence
