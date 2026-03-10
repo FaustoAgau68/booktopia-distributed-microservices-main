@@ -1,5 +1,7 @@
 # 📚 Booktopia: Enterprise-Grade Microservices E-commerce Platform
 
+
+
 <p align="center">
   <strong>A high-performance distributive system built for modern book commerce</strong><br>
   Engineered with Go, gRPC, Apache Kafka, and Polyglot Persistence
@@ -18,6 +20,7 @@
 
 ## 📝 Overview
 
+### It is a collaboration project to complete 4 months online Backend Golang Bootcamp at Hactiv8
 **Booktopia** is a state-of-the-art e-commerce platform designed with a **Microservices Architecture**. It addresses the complexities of modern digital marketplaces by decoupling core functionalities into independent, resilient services. 
 
 The platform excels in distributed system orchestration, utilizing **gRPC** for low-latency internal communication and **Apache Kafka** for asynchronous, event-driven transaction processing.
